@@ -13,10 +13,11 @@ import pickle
 import os
 import re
 import torch
-import ipdb
+# import ipdb
 import random
 from tqdm import tqdm
 from scipy.linalg import norm
+import json
 
 try:
     from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
@@ -208,17 +209,65 @@ def generate_vocab(files, vocab, cutoff=50000):
     print(f'[!] Save the vocab into {vocab}, vocab_size: {len(w2idx)}')
 
 
-def generate_bert_embedding(vocab, path):
-    bc = BertClient()
-    w2idx, idx2w = vocab
-    words = [word for word in w2idx]
-    emb = bc.encode(words)  # [vocab_size, 768], ndarray
+def generate_vocab_withfield(file, vocab, field='src', cutoff=50000):
+    # training and validation files, input vocab and output vocab file
+    # NOTE: field can be either 'src' or 'trg'
+    words = []
+    if field == 'src' or field == 'trg':
+        print("Load file: {0}, work on field: {1}".format(file, field))
+        with open(file) as f:
+            cnt_line = 0
+            for line in f:
+                cur_data = json.loads(line)
+                cur_text = cur_data[field]
+                list_words = nltk.word_tokenize(cur_text)
+                words.extend(list_words)
+                cnt_line += 1
+                if cnt_line % 10000 == 0:
+                    print("Processed {} lines".format(cnt_line))
+        print("Total {} lines".format(cnt_line))
+    elif field == 'all':
+        print("Load file: {0}, work on field: {1}".format(file, field))
+        with open(file) as f:
+            cnt_line = 0
+            for line in f:
+                cur_data = json.loads(line)
+                cur_text_src = cur_data['src']
+                cur_text_trg = cur_data['trg']
+                list_words_src = nltk.word_tokenize(cur_text_src)
+                list_words_trg = nltk.word_tokenize(cur_text_trg)
+                words.extend(list_words_src)
+                words.extend(list_words_trg)
+                cnt_line += 1
+                if cnt_line % 10000 == 0:
+                    print("Processed {} lines".format(cnt_line))
+        print("Total {} lines".format(cnt_line))
+    else:
+        raise Exception("Field {} not supported!".format(field))
+    words = Counter(words)
+    print(f'[!] whole vocab size: {len(words)}')
+    words = words.most_common(cutoff)
+    # special token
+    words.extend([('<sos>', 1), ('<eos>', 1),
+                  ('<unk>', 1), ('<pad>', 1), ])
+    w2idx = {item[0]: idx for idx, item in enumerate(words)}
+    idx2w = [item[0] for item in words]
+    with open(vocab, 'wb') as f:
+        pickle.dump((w2idx, idx2w), f)
+    print(f'[!] Save the vocab into {vocab}, vocab_size: {len(w2idx)}')
 
-    # save into the processed folder
-    with open(path, 'wb') as f:
-        pickle.dump(emb, f)
 
-    print(f'[!] write the bert embedding into {path}')
+# def generate_bert_embedding(vocab, path):
+#     bc = BertClient()
+#     w2idx, idx2w = vocab
+#     words = [word for word in w2idx]
+#     emb = bc.encode(words)  # [vocab_size, 768], ndarray
+
+#     # save into the processed folder
+#     with open(path, 'wb') as f:
+#         pickle.dump(emb, f)
+
+#     print(f'[!] write the bert embedding into {path}')
 
 
 # load data function for hierarchical models
@@ -868,8 +917,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Utils function')
     parser.add_argument('--mode', type=str, default='vocab',
                         help='how to run the utils.py, (vocab,)')
+    parser.add_argument('--field', type=str, default='src',
+                        help='the field of dataset (src or trg)')
     parser.add_argument('--dataset', type=str, default='dailydialog')
-    parser.add_argument('--file', type=str, nargs='+', default=None,
+    parser.add_argument('--file', type=str, default=None,
                         help='file for generating the vocab')
     parser.add_argument('--vocab', type=str, default='',
                         help='input or output vocabulary')
@@ -906,7 +957,8 @@ if __name__ == "__main__":
     mode = args.mode
 
     if mode == 'vocab':
-        generate_vocab(args.file, args.vocab, cutoff=args.cutoff)
+        # generate_vocab(args.file, args.vocab, cutoff=args.cutoff)
+        generate_vocab_withfield(args.file, args.vocab, args.field, cutoff=args.cutoff)
         # analyse_coverage_word_embedding(args.vocab, lang=args.lang)
     elif mode == 'pretrained':
         with open(args.vocab, 'rb') as f:

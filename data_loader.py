@@ -1,28 +1,24 @@
-#!/usr/bin/python3
-# Author: GMFTBY
-# Time: 2019.9.14
-
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 import transformers
-from utils import *
-import ipdb
+from utils import load_pickle, clean, load_data, pad_sequence, transformer_list
 import random
 import nltk
 import os
 import pickle
+import json
 
 
-def load_data_flatten(src, tgt, src_vocab, tgt_vocab, maxlen, tgt_maxlen):
+def load_data_flatten(dataset_file, src_vocab, tgt_vocab, maxlen, tgt_maxlen):
     '''
     Used by vanilla seq2seq with attention and transformer
     '''
     # check the file, exist -> ignore
-    src_prepath = os.path.splitext(src)[0] + '-flatten.pkl'
-    tgt_prepath = os.path.splitext(tgt)[0] + '-flatten.pkl'
+    src_prepath = os.path.splitext(dataset_file)[0] + '-src-flatten.pkl'
+    tgt_prepath = os.path.splitext(dataset_file)[0] + '-trg-flatten.pkl'
     if os.path.exists(src_prepath) and os.path.exists(tgt_prepath):
         print(f'[!] preprocessed file {src_prepath} exist, load directly')
         print(f'[!] preprocessed file {tgt_prepath} exist, load directly')
@@ -40,25 +36,45 @@ def load_data_flatten(src, tgt, src_vocab, tgt_vocab, maxlen, tgt_maxlen):
 
     # sub function
     def load_(filename, w2idx, src=True):
+        # TODO: Need to add the emotion label here.
         with open(filename) as f:
             dataset = []
             for line in tqdm(f.readlines()):
-                line = clean(line)
-                # if '<user0>' in line: user_c = '<user0>'
-                # elif '<user1>' in line: user_c = '<user1>'
-                line = line.replace('<user0>', 'user0')
-                line = line.replace('<user1>', 'user1')
-                line = [w2idx['<sos>']] + [w2idx.get(w, w2idx['<unk>']) for w in nltk.word_tokenize(line)] + [
-                    w2idx['<eos>']]
-                if src and len(line) > maxlen:
-                    line = [w2idx['<sos>']] + line[-maxlen:]
-                elif src == False and len(line) > tgt_maxlen:
-                    line = line[:tgt_maxlen] + [w2idx['<eos>']]
-                dataset.append(line)
+                if src:
+                    # in the source field
+                    line = json.loads(line)
+                    line_text = line['src']
+                    line_text = clean(line_text)
+                    # if '<user0>' in line: user_c = '<user0>'
+                    # elif '<user1>' in line: user_c = '<user1>'
+                    line_text = line_text.replace('<user0>', 'user0')
+                    line_text = line_text.replace('<user1>', 'user1')
+                    line_text = [w2idx['<sos>']] + [w2idx.get(w, w2idx['<unk>']) for w in nltk.word_tokenize(line_text)] + [
+                        w2idx['<eos>']]
+                    if len(line_text) > maxlen:
+                        # cutoff for too long input seq
+                        line_text = [w2idx['<sos>']] + line_text[-maxlen:]
+                else:
+                    # in the target field
+                    line = json.loads(line)
+                    line_text = line['trg']
+                    line_text = clean(line_text)
+                    # if '<user0>' in line: user_c = '<user0>'
+                    # elif '<user1>' in line: user_c = '<user1>'
+                    line_text = line_text.replace('<user0>', 'user0')
+                    line_text = line_text.replace('<user1>', 'user1')
+                    line_text = [w2idx['<sos>']] + [w2idx.get(w, w2idx['<unk>']) for w in nltk.word_tokenize(line_text)] + [
+                        w2idx['<eos>']]
+                    if len(line_text) > maxlen:
+                        # cutoff for too long input seq
+                        line_text = [w2idx['<sos>']] + line_text[-maxlen:]
+                    if len(line_text) > tgt_maxlen:
+                        line_text = line_text[:tgt_maxlen] + [w2idx['<eos>']]
+                dataset.append(line_text)
         return dataset
 
-    src_dataset = load_(src, src_w2idx, src=True)  # [datasize, lengths]
-    tgt_dataset = load_(tgt, tgt_w2idx, src=False)  # [datasize, lengths]
+    src_dataset = load_(dataset_file, src_w2idx, src=True)           # [datasize, lengths]
+    tgt_dataset = load_(dataset_file, tgt_w2idx, src=False)          # [datasize, lengths]
     print(f'[!] load dataset over, write into file {src_prepath} and {tgt_prepath}')
 
     with open(src_prepath, 'wb') as f:
@@ -151,7 +167,7 @@ def get_batch_data(src, tgt, src_vocab, tgt_vocab, batch_size, maxlen, tgt_maxle
         yield sbatch, tbatch, turn_lengths
 
 
-def get_batch_data_flatten(src, tgt, src_vocab, tgt_vocab, batch_size, maxlen, tgt_maxlen):
+def get_batch_data_flatten(dataset_file, src_vocab, tgt_vocab, batch_size, maxlen, tgt_maxlen):
     # flatten batch data for unHRED-based models (Seq2Seq)
     # return long context for predicting response
     # [datasize, turns, lengths], [datasize, lengths]
@@ -159,7 +175,7 @@ def get_batch_data_flatten(src, tgt, src_vocab, tgt_vocab, batch_size, maxlen, t
     tgt_w2idx, tgt_idx2w = load_pickle(tgt_vocab)
 
     # [datasize, lengths], [datasize, lengths]
-    src_dataset, tgt_dataset = load_data_flatten(src, tgt, src_vocab, tgt_vocab, maxlen, tgt_maxlen)
+    src_dataset, tgt_dataset = load_data_flatten(dataset_file, src_vocab, tgt_vocab, maxlen, tgt_maxlen)
 
     turns = [len(i) for i in src_dataset]
     turnsidx = np.argsort(turns)
@@ -365,17 +381,22 @@ def get_batch_data_graph(src, tgt, graph, src_vocab, tgt_vocab,
 
 if __name__ == "__main__":
     batch_num = 0
-    src_w2idx, src_idx2w = load_pickle('./processed/dailydialog/iptvocab.pkl')
-    tgt_w2idx, tgt_idx2w = load_pickle('./processed/dailydialog/optvocab.pkl')
+    src_w2idx, src_idx2w = load_pickle('./processed/DailyDialog/iptvocab.pkl')
+    tgt_w2idx, tgt_idx2w = load_pickle('./processed/DailyDialog/optvocab.pkl')
     torch.cuda.set_device(2)
-    for sbatch, tbatch, turn_lengths in get_batch_data_flatten('./data/dailydialog/src-train.txt',
-                                                               './data/dailydialog/tgt-train.txt',
-                                                               './processed/dailydialog/iptvocab.pkl',
-                                                               './processed/dailydialog/optvocab.pkl',
-                                                               32, 50):
-        ipdb.set_trace()
-        print(len(sbatch), tbatch.shape, turn_lengths.shape)
+    for sbatch, tbatch, turn_lengths in get_batch_data_flatten(
+                                        './dataset/DailyDialog/train.json',
+                                        './processed/DailyDialog/iptvocab.pkl',
+                                        './processed/DailyDialog/optvocab.pkl', 16, 50, 50):
+        # ipdb.set_trace()
+        print("src length: {}".format(len(sbatch)))
+        print("source batch shape: {}".format(sbatch.shape))
+        print("target batch shape: {}".format(tbatch.shape))
+        print("turn lengths shape: {}".format(turn_lengths.shape))
         # if len(sbatch) == 3:
         #     ipdb.set_trace()
         batch_num += 1
     print('Batch_num:', batch_num)
+    print(sbatch)
+    print(tbatch)
+    print(turn_lengths)
